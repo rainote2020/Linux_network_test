@@ -21,11 +21,38 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
+# 检查NumPy兼容性
+NUMPY_CHECK=$(python3 -c "
+try:
+    import numpy as np
+    print(np.__version__)
+    if np.__version__.startswith('2.'):
+        print('NUMPY2')
+    else:
+        print('OK')
+except ImportError:
+    print('MISSING')
+except Exception as e:
+    print('ERROR', str(e))
+")
+
+if [[ $NUMPY_CHECK == *"NUMPY2"* ]]; then
+    echo "检测到NumPy 2.x，可能会导致兼容性问题。"
+    echo "建议运行 ./fix_dependencies.sh 修复依赖。"
+    read -p "是否继续？(y/n) [n]: " continue_choice
+    continue_choice=${continue_choice:-n}
+    if [[ "$continue_choice" != "y" && "$continue_choice" != "Y" ]]; then
+        echo "已取消。请先运行 ./fix_dependencies.sh 修复NumPy兼容性问题。"
+        exit 0
+    fi
+fi
+
 # 显示菜单
 echo "请选择操作:"
 echo "1) 运行完整网络测试"
 echo "2) 运行单次测试并查看JSON结构 (debug)"
 echo "3) 分析ping日志文件"
+echo "4) 检查/修复依赖问题"
 echo "q) 退出"
 read -p "请输入选择 [1]: " choice
 
@@ -98,6 +125,20 @@ case $choice in
         
         chmod +x ping_analyzer.py
         ./ping_analyzer.py "$ping_log"
+        ;;
+    
+    4)
+        # 检查/修复依赖
+        chmod +x check_compatibility.py
+        chmod +x fix_dependencies.sh
+        echo "运行依赖检查..."
+        ./check_compatibility.py
+        
+        read -p "是否运行自动修复脚本？(y/n) [y]: " fix_choice
+        fix_choice=${fix_choice:-y}
+        if [[ "$fix_choice" == "y" || "$fix_choice" == "Y" ]]; then
+            ./fix_dependencies.sh
+        fi
         ;;
         
     q|Q)
