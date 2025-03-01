@@ -83,15 +83,31 @@ class NetworkTester:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             data = json.loads(result.stdout)
 
-            # 提取结果
+            # 调试信息 - 查看JSON结构
+            if "end" not in data:
+                print(f"{Fore.YELLOW}警告：JSON输出缺少'end'键{Style.RESET_ALL}")
+                print(f"JSON数据结构：{list(data.keys())}")
+                return {
+                    "timestamp": datetime.now().isoformat(),
+                    "target_bandwidth": target_bandwidth,
+                    "error": "JSON结构不完整，缺少'end'键",
+                    "raw_structure": list(data.keys()),
+                }
+
+            # 安全地获取各项数据，使用get方法提供默认值
+            end_data = data.get("end", {})
+            sum_received = end_data.get("sum_received", {})
+            sum_sent = end_data.get("sum_sent", {})
+
+            # 提取结果，使用get方法来避免KeyError
             test_result = {
                 "timestamp": datetime.now().isoformat(),
                 "target_bandwidth": target_bandwidth,
-                "achieved_bandwidth": data["end"]["sum_received"]["bits_per_second"] / 1_000_000,
-                "retransmits": data["end"]["sum_sent"].get("retransmits", 0),
-                "jitter_ms": data["end"]["sum_received"]["jitter_ms"],
-                "lost_packets": data["end"]["sum_received"].get("lost_packets", 0),
-                "total_packets": data["end"]["sum_received"].get("packets", 0),
+                "achieved_bandwidth": sum_received.get("bits_per_second", 0) / 1_000_000,
+                "retransmits": sum_sent.get("retransmits", 0),
+                "jitter_ms": sum_received.get("jitter_ms", 0),  # 使用get方法，如果不存在则默认为0
+                "lost_packets": sum_received.get("lost_packets", 0),
+                "total_packets": sum_received.get("packets", 0),
                 "raw_data": data,
             }
 
@@ -120,13 +136,23 @@ class NetworkTester:
                 "error": str(e),
                 "stderr": e.stderr,
             }
-        except json.JSONDecodeError:
-            print(f"{Fore.RED}无法解析iperf3输出为JSON{Style.RESET_ALL}")
+        except json.JSONDecodeError as e:
+            print(f"{Fore.RED}无法解析iperf3输出为JSON: {e}{Style.RESET_ALL}")
+            if "result" in locals():
+                print(f"非JSON输出的前100个字符: {result.stdout[:100]}")
             return {
                 "timestamp": datetime.now().isoformat(),
                 "target_bandwidth": target_bandwidth,
-                "error": "无法解析iperf3输出",
-                "output": result.stdout if "result" in locals() else "未知输出",
+                "error": f"无法解析iperf3输出: {e}",
+                "output": result.stdout[:500] if "result" in locals() else "未知输出",
+            }
+        except Exception as e:
+            # 捕获所有其他类型的异常
+            print(f"{Fore.RED}未预期的错误: {type(e).__name__}: {e}{Style.RESET_ALL}")
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "target_bandwidth": target_bandwidth,
+                "error": f"未预期的错误: {type(e).__name__}: {e}",
             }
 
     def run_all_tests(self):
@@ -165,6 +191,12 @@ class NetworkTester:
             if r["target_bandwidth"] > 0
         ]
 
+        # 安全地计算抖动平均值
+        try:
+            avg_jitter = statistics.mean(r.get("jitter_ms", 0) for r in valid_results)
+        except statistics.StatisticsError:
+            avg_jitter = 0
+
         return {
             "status": "成功",
             "test_count": len(self.results),
@@ -174,7 +206,7 @@ class NetworkTester:
             "best_stable_bandwidth": (
                 best_stable_bandwidth["achieved_bandwidth"] if best_stable_bandwidth else 0
             ),
-            "average_jitter_ms": statistics.mean(r["jitter_ms"] for r in valid_results),
+            "average_jitter_ms": avg_jitter,
             "average_achievement_rate": statistics.mean(achievement_rates) if achievement_rates else 0,
         }
 
@@ -321,12 +353,22 @@ def main():
     )
     parser.add_argument("-o", "--output", type=str, default="results", help="结果输出目录 (默认: results)")
     parser.add_argument("--no-color", action="store_true", help="禁用彩色输出")
+    parser.add_argument("-v", "--verbose", action="store_true", help="显示详细信息")
 
     args = parser.parse_args()
 
     # 如果指定了禁用颜色
     if args.no_color:
         init(autoreset=True, strip=True)
+
+    # 检查iperf3是否已安装
+    try:
+        subprocess.run(["iperf3", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except FileNotFoundError:
+        print(f"{Fore.RED}错误: 未找到iperf3命令。请先安装iperf3:{Style.RESET_ALL}")
+        print("  Ubuntu/Debian: sudo apt install iperf3")
+        print("  CentOS/RHEL:   sudo yum install iperf3")
+        return 1
 
     # 解析带宽列表
     if args.bandwidths:
